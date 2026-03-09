@@ -23,34 +23,23 @@ author_ids <- c(
 feed_title       <- "Prehospital Division Publications"
 feed_description <- "Recent publications from the UW Prehospital Division."
 feed_link        <- "https://uwdem.github.io/Prehospital-Division-Publications/feed.xml"
-max_results      <- 50  # Number of recent articles to include
-
-# --- Build Scopus Query ------------------------------------------------------
-
-# Construct the query string: AU-ID(xxx) OR AU-ID(yyy) OR ...
-query <- paste(
-  paste0("AU-ID(", author_ids, ")"),
-  collapse = " OR "
-)
+max_per_author   <- 25  # Max articles per author
 
 api_key <- Sys.getenv("SCOPUS_API_KEY")
 if (nchar(api_key) == 0) {
   stop("SCOPUS_API_KEY environment variable is not set.")
 }
 
-# --- Query Scopus API ---------------------------------------------------------
+# --- Query Scopus API (one author at a time) ---------------------------------
 
-message("Querying Scopus API...")
-message(glue("Query: {query}"))
-message(glue("Query length: {nchar(query)} characters"))
+query_author <- function(au_id) {
+  query <- paste0("AU-ID(", au_id, ")")
+  message(glue("  Querying {query}..."))
 
-# Build the request — pass API key as header (Elsevier recommended method)
-# Use default view (no field parameter) to avoid encoding issues
-resp <- tryCatch({
-  request("https://api.elsevier.com/content/search/scopus") |>
+  resp <- request("https://api.elsevier.com/content/search/scopus") |>
     req_url_query(
       query = query,
-      count = max_results,
+      count = max_per_author,
       sort  = "-coverDate"
     ) |>
     req_headers(
@@ -59,41 +48,66 @@ resp <- tryCatch({
     ) |>
     req_error(is_error = function(resp) FALSE) |>
     req_perform()
-}, error = function(e) {
-  stop(glue("Request failed: {e$message}"))
+
+  status <- resp_status(resp)
+
+  if (status != 200) {
+    body <- resp_body_string(resp)
+    warning(glue("AU-ID {au_id} returned status {status}: {body}"))
+    return(list())
+  }
+
+  data <- resp_body_json(resp)
+  entries <- data[["search-results"]][["entry"]]
+
+  if (is.null(entries) || length(entries) == 0) {
+    return(list())
+  }
+  if (length(entries) == 1 && !is.null(entries[[1]][["error"]])) {
+    return(list())
+  }
+
+  message(glue("    Found {length(entries)} articles"))
+  return(entries)
+}
+
+message("Querying Scopus API for each author...")
+all_entries <- list()
+for (au_id in author_ids) {
+  entries <- query_author(au_id)
+  all_entries <- c(all_entries, entries)
+  Sys.sleep(0.5)  # Be polite to the API
+}
+
+# Deduplicate by DOI or title
+seen <- character(0)
+unique_entries <- list()
+for (entry in all_entries) {
+  doi   <- entry[["prism:doi"]] %||% ""
+  title <- entry[["dc:title"]]  %||% ""
+  key   <- if (nchar(doi) > 0) doi else title
+
+  if (nchar(key) > 0 && !(key %in% seen)) {
+    seen <- c(seen, key)
+    unique_entries <- c(unique_entries, list(entry))
+  }
+}
+
+message(glue("Total unique articles: {length(unique_entries)}"))
+
+# Sort by cover date (newest first)
+dates <- sapply(unique_entries, function(e) {
+  e[["prism:coverDate"]] %||% "1900-01-01"
 })
-
-status <- resp_status(resp)
-message(glue("HTTP Status: {status}"))
-
-if (status != 200) {
-  # Print the full response body for debugging
-  body <- resp_body_string(resp)
-  message(glue("Error response body:\n{body}"))
-  stop(glue("Scopus API returned status {status}"))
-}
-
-data <- resp_body_json(resp)
-
-entries <- data[["search-results"]][["entry"]]
-
-if (is.null(entries) || length(entries) == 0) {
-  message("No results returned from Scopus. Generating empty feed.")
-  entries <- list()
-}
-
-message(glue("Retrieved {length(entries)} articles from Scopus."))
+unique_entries <- unique_entries[order(dates, decreasing = TRUE)]
 
 # --- Build RSS XML ------------------------------------------------------------
 
-# Helper: safely extract a field from a Scopus entry, returning a default
-# if the field is NULL or missing
 safe_get <- function(entry, field, default = "") {
   val <- entry[[field]]
   if (is.null(val)) default else as.character(val)
 }
 
-# Escape special XML characters
 xml_escape <- function(text) {
   text <- gsub("&",  "&amp;",  text, fixed = TRUE)
   text <- gsub("<",  "&lt;",   text, fixed = TRUE)
@@ -103,8 +117,7 @@ xml_escape <- function(text) {
   text
 }
 
-# Build each <item> block
-items_xml <- vapply(entries, function(entry) {
+items_xml <- vapply(unique_entries, function(entry) {
   title   <- xml_escape(safe_get(entry, "dc:title", "Untitled"))
   creator <- xml_escape(safe_get(entry, "dc:creator", "Unknown Author"))
   date    <- safe_get(entry, "prism:coverDate", "")
@@ -112,7 +125,6 @@ items_xml <- vapply(entries, function(entry) {
   journal <- xml_escape(safe_get(entry, "prism:publicationName", ""))
   eid     <- safe_get(entry, "eid", "")
 
-  # Build article link: Scopus record link (for attribution), fallback to DOI
   if (nchar(eid) > 0) {
     link <- paste0("https://www.scopus.com/record/display.uri?eid=", eid, "&origin=resultslist")
   } else if (nchar(doi) > 0) {
@@ -121,7 +133,6 @@ items_xml <- vapply(entries, function(entry) {
     link <- safe_get(entry, "prism:url", "#")
   }
 
-  # Build a description with author, journal, and date
   desc_parts <- c()
   if (nchar(creator) > 0) desc_parts <- c(desc_parts, paste0("Author: ", creator, " et al."))
   if (nchar(journal) > 0) desc_parts <- c(desc_parts, paste0("Journal: ", journal))
@@ -129,13 +140,9 @@ items_xml <- vapply(entries, function(entry) {
   if (nchar(doi) > 0)     desc_parts <- c(desc_parts, paste0("DOI: ", doi))
   description <- xml_escape(paste(desc_parts, collapse = " | "))
 
-  # Format date as RFC 822 for RSS (pubDate)
   pub_date <- ""
   if (nchar(date) > 0) {
-    parsed_date <- tryCatch(
-      as.Date(date),
-      error = function(e) NA
-    )
+    parsed_date <- tryCatch(as.Date(date), error = function(e) NA)
     if (!is.na(parsed_date)) {
       pub_date <- format(parsed_date, "%a, %d %b %Y 00:00:00 +0000")
     }
@@ -151,7 +158,6 @@ items_xml <- vapply(entries, function(entry) {
     </item>")
 }, character(1))
 
-# Assemble the full RSS document
 build_date <- format(Sys.time(), "%a, %d %b %Y %H:%M:%S +0000", tz = "UTC")
 
 rss_xml <- glue('<?xml version="1.0" encoding="UTF-8"?>
@@ -170,5 +176,5 @@ rss_xml <- glue('<?xml version="1.0" encoding="UTF-8"?>
 
 dir.create("docs", showWarnings = FALSE)
 writeLines(rss_xml, "docs/feed.xml")
-message(glue("RSS feed written to docs/feed.xml with {length(entries)} items."))
+message(glue("RSS feed written to docs/feed.xml with {length(unique_entries)} items."))
 message("Done!")
