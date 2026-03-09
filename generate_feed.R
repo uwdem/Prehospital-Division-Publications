@@ -1,35 +1,91 @@
+# generate_feed.R
+# Queries the Scopus API for publications by specified authors (via AU-ID)
+# and generates an RSS XML feed file.
+#
+# Required environment variable: SCOPUS_API_KEY
+# Output: docs/feed.xml (served by GitHub Pages)
+
 library(httr2)
 library(xml2)
 library(glue)
+library(jsonlite)
 
 `%||%` <- function(x, y) if (is.null(x)) y else x
 
 # --- Configuration -----------------------------------------------------------
 
-# Scopus Author IDs
-author_ids <- c(
-  "57212495960",  # Michael Spigner
-  "57031978800",  # Megan Gussick
-  "57190754112",  # Michael Lohmeier
-  "55314929900",  # Michael Mancera
-  "56943490400",  # Nicholas Genthe
-  "57201460258",  # Craig Tschautscher
-  "55635899500",  # Brittney Bernardoni
-  "57207298867",  # Drew Cathers
-  "57201897308",  # Ryan Newberry
-  "56012093400",  # Michael Kim (1)
-  "57221073727"   # Michael Kim (2)
+# Scopus Author IDs for your group (used for querying AND filtering authors)
+author_map <- list(
+  "57212495960" = "Spigner M.",
+  "57031978800" = "Gussick M.",
+  "57190754112" = "Lohmeier M.",
+  "55314929900" = "Mancera M.",
+  "56943490400" = "Genthe N.",
+  "57201460258" = "Tschautscher C.",
+  "55635899500" = "Bernardoni B.",
+  "57207298867" = "Cathers D.",
+  "57201897308" = "Newberry R.",
+  "56012093400" = "Kim M.",
+  "57221073727" = "Kim M."
 )
 
-# Feed metadata — customize these for your site
+author_ids <- names(author_map)
+
 feed_title       <- "Prehospital Division Publications"
 feed_description <- "Recent publications from the UW Prehospital Division."
 feed_link        <- "https://uwdem.github.io/Prehospital-Division-Publications/feed.xml"
-max_per_author   <- 25  # Max articles per author
+max_per_author   <- 25
 
 api_key <- Sys.getenv("SCOPUS_API_KEY")
 if (nchar(api_key) == 0) {
   stop("SCOPUS_API_KEY environment variable is not set.")
+}
+
+# --- Helper functions --------------------------------------------------------
+
+safe_get <- function(entry, field, default = "") {
+  val <- entry[[field]]
+  if (is.null(val)) default else as.character(val)
+}
+
+xml_escape <- function(text) {
+  text <- gsub("&",  "&amp;",  text, fixed = TRUE)
+  text <- gsub("<",  "&lt;",   text, fixed = TRUE)
+  text <- gsub(">",  "&gt;",   text, fixed = TRUE)
+  text <- gsub("\"", "&quot;", text, fixed = TRUE)
+  text <- gsub("'",  "&apos;", text, fixed = TRUE)
+  text
+}
+
+# Extract UW group authors from entry's author list
+get_group_authors <- function(entry) {
+  # The default Scopus search view includes an "author" list with authid and authname
+  authors <- entry[["author"]]
+  if (is.null(authors)) {
+    # Fallback to dc:creator if no author list
+    creator <- entry[["dc:creator"]] %||% ""
+    return(creator)
+  }
+
+  # Filter to only authors whose authid matches our group
+  group_names <- c()
+  for (a in authors) {
+    aid <- a[["authid"]] %||% ""
+    if (aid %in% author_ids) {
+      aname <- a[["authname"]] %||% ""
+      if (nchar(aname) > 0) {
+        group_names <- c(group_names, aname)
+      }
+    }
+  }
+
+  if (length(group_names) == 0) {
+    # Shouldn't happen, but fallback
+    creator <- entry[["dc:creator"]] %||% ""
+    return(creator)
+  }
+
+  paste(group_names, collapse = ", ")
 }
 
 # --- Query Scopus API (one author at a time) ---------------------------------
@@ -78,7 +134,7 @@ all_entries <- list()
 for (au_id in author_ids) {
   entries <- query_author(au_id)
   all_entries <- c(all_entries, entries)
-  Sys.sleep(0.5)  # Be polite to the API
+  Sys.sleep(0.5)
 }
 
 # Deduplicate by DOI or title
@@ -105,28 +161,17 @@ unique_entries <- unique_entries[order(dates, decreasing = TRUE)]
 
 # --- Build RSS XML ------------------------------------------------------------
 
-safe_get <- function(entry, field, default = "") {
-  val <- entry[[field]]
-  if (is.null(val)) default else as.character(val)
-}
-
-xml_escape <- function(text) {
-  text <- gsub("&",  "&amp;",  text, fixed = TRUE)
-  text <- gsub("<",  "&lt;",   text, fixed = TRUE)
-  text <- gsub(">",  "&gt;",   text, fixed = TRUE)
-  text <- gsub("\"", "&quot;", text, fixed = TRUE)
-  text <- gsub("'",  "&apos;", text, fixed = TRUE)
-  text
-}
-
 items_xml <- vapply(unique_entries, function(entry) {
   title   <- xml_escape(safe_get(entry, "dc:title", "Untitled"))
-  creator <- xml_escape(safe_get(entry, "dc:creator", "Unknown Author"))
-  date    <- safe_get(entry, "prism:coverDate", "")
   doi     <- safe_get(entry, "prism:doi", "")
-  journal <- xml_escape(safe_get(entry, "prism:publicationName", ""))
+  journal <- safe_get(entry, "prism:publicationName", "")
   eid     <- safe_get(entry, "eid", "")
+  date    <- safe_get(entry, "prism:coverDate", "")
 
+  # Get only UW group author names
+  group_authors <- get_group_authors(entry)
+
+  # Build link to Scopus record
   if (nchar(eid) > 0) {
     link <- paste0("https://www.scopus.com/record/display.uri?eid=", eid, "&amp;origin=resultslist")
   } else if (nchar(doi) > 0) {
@@ -135,13 +180,17 @@ items_xml <- vapply(unique_entries, function(entry) {
     link <- safe_get(entry, "prism:url", "#")
   }
 
-  desc_parts <- c()
-  if (nchar(creator) > 0) desc_parts <- c(desc_parts, paste0("Author: ", creator, " et al."))
-  if (nchar(journal) > 0) desc_parts <- c(desc_parts, paste0("Journal: ", journal))
-  if (nchar(date) > 0)    desc_parts <- c(desc_parts, paste0("Published: ", date))
-  if (nchar(doi) > 0)     desc_parts <- c(desc_parts, paste0("DOI: ", doi))
-  description <- xml_escape(paste(desc_parts, collapse = " | "))
+  # Build description: journal on one line, DOI on next line
+  # WordPress RSS block renders <description> as the "excerpt"
+  desc_lines <- c()
+  if (nchar(journal) > 0) desc_lines <- c(desc_lines, xml_escape(journal))
+  if (nchar(doi) > 0)     desc_lines <- c(desc_lines, paste0("DOI: ", xml_escape(doi)))
+  description <- paste(desc_lines, collapse = "\n")
 
+  # <author> tag - WordPress RSS block uses this for "Display author"
+  author_tag <- xml_escape(group_authors)
+
+  # pubDate for RSS
   pub_date <- ""
   if (nchar(date) > 0) {
     parsed_date <- tryCatch(as.Date(date), error = function(e) NA)
@@ -154,7 +203,7 @@ items_xml <- vapply(unique_entries, function(entry) {
       <title>{title}</title>
       <link>{link}</link>
       <description>{description}</description>
-      <author>{creator}</author>
+      <author>{author_tag}</author>
       <pubDate>{pub_date}</pubDate>
       <guid isPermaLink=\"true\">{link}</guid>
     </item>")
@@ -180,5 +229,3 @@ dir.create("docs", showWarnings = FALSE)
 writeLines(rss_xml, "docs/feed.xml")
 message(glue("RSS feed written to docs/feed.xml with {length(unique_entries)} items."))
 message("Done!")
-
-
