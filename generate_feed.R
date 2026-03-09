@@ -58,34 +58,25 @@ xml_escape <- function(text) {
 }
 
 # Extract UW group authors from entry's author list
-get_group_authors <- function(entry) {
-  # The default Scopus search view includes an "author" list with authid and authname
+# Extract ALL authors from entry's author list
+get_all_authors <- function(entry) {
   authors <- entry[["author"]]
+  
   if (is.null(authors)) {
-    # Fallback to dc:creator if no author list
-    creator <- entry[["dc:creator"]] %||% ""
-    return(creator)
+    # Fallback if the specific author list isn't there
+    return(entry[["dc:creator"]] %||% "Unknown Author")
   }
 
-  # Filter to only authors whose authid matches our group
-  group_names <- c()
-  for (a in authors) {
-    aid <- a[["authid"]] %||% ""
-    if (aid %in% author_ids) {
-      aname <- a[["authname"]] %||% ""
-      if (nchar(aname) > 0) {
-        group_names <- c(group_names, aname)
-      }
-    }
+  # Scopus usually returns a list of author objects
+  # We extract "authname" (e.g., "Spigner M.") from each
+  all_names <- sapply(authors, function(a) a[["authname"]] %||% "")
+  all_names <- all_names[nchar(all_names) > 0]
+  
+  if (length(all_names) == 0) {
+    return(entry[["dc:creator"]] %||% "Unknown Author")
   }
 
-  if (length(group_names) == 0) {
-    # Shouldn't happen, but fallback
-    creator <- entry[["dc:creator"]] %||% ""
-    return(creator)
-  }
-
-  paste(group_names, collapse = ", ")
+  paste(all_names, collapse = ", ")
 }
 
 # --- Query Scopus API (one author at a time) ---------------------------------
@@ -168,10 +159,10 @@ items_xml <- vapply(unique_entries, function(entry) {
   eid     <- safe_get(entry, "eid", "")
   date    <- safe_get(entry, "prism:coverDate", "")
 
-  # Get only UW group author names
-  group_authors <- get_group_authors(entry)
+  # Get ALL author names instead of just the group
+  all_authors <- get_all_authors(entry)
 
-  # Build link to Scopus record
+  # Build link
   if (nchar(eid) > 0) {
     link <- paste0("https://www.scopus.com/record/display.uri?eid=", eid, "&amp;origin=resultslist")
   } else if (nchar(doi) > 0) {
@@ -180,17 +171,13 @@ items_xml <- vapply(unique_entries, function(entry) {
     link <- safe_get(entry, "prism:url", "#")
   }
 
-  # Build description: journal on one line, DOI on next line
-  # WordPress RSS block renders <description> as the "excerpt"
-  desc_lines <- c()
-  if (nchar(journal) > 0) desc_lines <- c(desc_lines, xml_escape(journal))
-  if (nchar(doi) > 0)     desc_lines <- c(desc_lines, paste0("DOI: ", xml_escape(doi)))
-  description <- paste(desc_lines, collapse = "<br/>")
+  # FORMATTING FIX: Use a standard <br /> and ensure no extra escaping
+  # We put the Journal and DOI inside CDATA to protect the HTML
+  desc_body <- ""
+  if (nchar(journal) > 0) desc_body <- paste0(journal, "<br />")
+  if (nchar(doi) > 0)     desc_body <- paste0(desc_body, "DOI: ", doi)
 
-  # <author> tag - WordPress RSS block uses this for "Display author"
-  author_tag <- xml_escape(group_authors)
-
-  # pubDate for RSS
+  # pubDate formatting
   pub_date <- ""
   if (nchar(date) > 0) {
     parsed_date <- tryCatch(as.Date(date), error = function(e) NA)
@@ -202,8 +189,8 @@ items_xml <- vapply(unique_entries, function(entry) {
   glue("    <item>
       <title>{title}</title>
       <link>{link}</link>
-      <description><![CDATA[{description}]]></description>
-      <dc:creator><![CDATA[{group_authors}]]></dc:creator>
+      <description><![CDATA[{desc_body}]]></description>
+      <dc:creator><![CDATA[{all_authors}]]></dc:creator>
       <pubDate>{pub_date}</pubDate>
       <guid isPermaLink=\"true\">{link}</guid>
     </item>")
@@ -229,4 +216,5 @@ dir.create("docs", showWarnings = FALSE)
 writeLines(rss_xml, "docs/feed.xml")
 message(glue("RSS feed written to docs/feed.xml with {length(unique_entries)} items."))
 message("Done!")
+
 
