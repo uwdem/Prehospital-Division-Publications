@@ -2,6 +2,8 @@ library(httr2)
 library(xml2)
 library(glue)
 
+`%||%` <- function(x, y) if (is.null(x)) y else x
+
 # --- Configuration -----------------------------------------------------------
 
 # Scopus Author IDs
@@ -178,3 +180,4 @@ dir.create("docs", showWarnings = FALSE)
 writeLines(rss_xml, "docs/feed.xml")
 message(glue("RSS feed written to docs/feed.xml with {length(unique_entries)} items."))
 message("Done!")
+
