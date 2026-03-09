@@ -185,7 +185,7 @@ items_xml <- vapply(unique_entries, function(entry) {
   desc_lines <- c()
   if (nchar(journal) > 0) desc_lines <- c(desc_lines, xml_escape(journal))
   if (nchar(doi) > 0)     desc_lines <- c(desc_lines, paste0("DOI: ", xml_escape(doi)))
-  description <- paste(desc_lines, collapse = "\n")
+  description <- paste(desc_lines, collapse = "<br/>")
 
   # <author> tag - WordPress RSS block uses this for "Display author"
   author_tag <- xml_escape(group_authors)
@@ -202,8 +202,8 @@ items_xml <- vapply(unique_entries, function(entry) {
   glue("    <item>
       <title>{title}</title>
       <link>{link}</link>
-      <description>{description}</description>
-      <author>{author_tag}</author>
+      <description><![CDATA[{description}]]></description>
+      <dc:creator><![CDATA[{group_authors}]]></dc:creator>
       <pubDate>{pub_date}</pubDate>
       <guid isPermaLink=\"true\">{link}</guid>
     </item>")
@@ -212,8 +212,8 @@ items_xml <- vapply(unique_entries, function(entry) {
 build_date <- format(Sys.time(), "%a, %d %b %Y %H:%M:%S +0000", tz = "UTC")
 
 rss_xml <- glue('<?xml version="1.0" encoding="UTF-8"?>
-<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom">
-  <channel>
+<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom" xmlns:dc="http://purl.org/dc/elements/1.1/">
+<channel>
     <title>{xml_escape(feed_title)}</title>
     <link>{feed_link}</link>
     <description>{xml_escape(feed_description)}</description>
@@ -229,3 +229,4 @@ dir.create("docs", showWarnings = FALSE)
 writeLines(rss_xml, "docs/feed.xml")
 message(glue("RSS feed written to docs/feed.xml with {length(unique_entries)} items."))
 message("Done!")
+
