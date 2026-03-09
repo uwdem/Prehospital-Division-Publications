@@ -128,7 +128,7 @@ items_xml <- vapply(unique_entries, function(entry) {
   eid     <- safe_get(entry, "eid", "")
 
   if (nchar(eid) > 0) {
-    link <- paste0("https://www.scopus.com/record/display.uri?eid=", eid, "&origin=resultslist")
+    link <- paste0("https://www.scopus.com/record/display.uri?eid=", eid, "&amp;origin=resultslist")
   } else if (nchar(doi) > 0) {
     link <- paste0("https://doi.org/", doi)
   } else {
@@ -180,4 +180,5 @@ dir.create("docs", showWarnings = FALSE)
 writeLines(rss_xml, "docs/feed.xml")
 message(glue("RSS feed written to docs/feed.xml with {length(unique_entries)} items."))
 message("Done!")
+
 
