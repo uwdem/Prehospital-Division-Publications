@@ -19,11 +19,11 @@ author_ids <- c(
   "57221073727"   # Michael Kim (2)
 )
 
-# Feed metadata
-feed_title       <- "UW Prehospital Publications"
-feed_description <- "Recent publications from the UW Prehospital Division"
-feed_link        <- "https://github.com/uwdem/Prehospital-Division-Publications/feed.xml"
-max_results      <- 50  # Number of recent articles to include.
+# Feed metadata — customize these for your site
+feed_title       <- "Prehospital Division Publications"
+feed_description <- "Recent publications from the UW Prehospital Division."
+feed_link        <- "https://uwdem.github.io/Prehospital-Division-Publications/feed.xml"
+max_results      <- 50  # Number of recent articles to include
 
 # --- Build Scopus Query ------------------------------------------------------
 
@@ -40,26 +40,37 @@ if (nchar(api_key) == 0) {
 
 # --- Query Scopus API ---------------------------------------------------------
 
-# The Scopus Search API returns article metadata.
-# Documentation: https://dev.elsevier.com/documentation/ScopusSearchAPI.wadl
-
 message("Querying Scopus API...")
+message(glue("Query: {query}"))
+message(glue("Query length: {nchar(query)} characters"))
 
-resp <- request("https://api.elsevier.com/content/search/scopus") |>
-  req_url_query(
-    query   = query,
-    count   = max_results,
-    sort    = "-coverDate",   # newest first
-    field   = "dc:title,dc:creator,prism:coverDate,prism:doi,prism:publicationName,dc:description,prism:url"
-  ) |>
-  req_headers(
-    `X-ELS-APIKey` = api_key,
-    Accept         = "application/json"
-  ) |>
-  req_perform()
+# Build the request — pass API key as header (Elsevier recommended method)
+# Use default view (no field parameter) to avoid encoding issues
+resp <- tryCatch({
+  request("https://api.elsevier.com/content/search/scopus") |>
+    req_url_query(
+      query = query,
+      count = max_results,
+      sort  = "-coverDate"
+    ) |>
+    req_headers(
+      `X-ELS-APIKey` = api_key,
+      Accept         = "application/json"
+    ) |>
+    req_error(is_error = function(resp) FALSE) |>
+    req_perform()
+}, error = function(e) {
+  stop(glue("Request failed: {e$message}"))
+})
 
-if (resp_status(resp) != 200) {
-  stop(glue("Scopus API returned status {resp_status(resp)}"))
+status <- resp_status(resp)
+message(glue("HTTP Status: {status}"))
+
+if (status != 200) {
+  # Print the full response body for debugging
+  body <- resp_body_string(resp)
+  message(glue("Error response body:\n{body}"))
+  stop(glue("Scopus API returned status {status}"))
 }
 
 data <- resp_body_json(resp)
@@ -75,6 +86,8 @@ message(glue("Retrieved {length(entries)} articles from Scopus."))
 
 # --- Build RSS XML ------------------------------------------------------------
 
+# Helper: safely extract a field from a Scopus entry, returning a default
+# if the field is NULL or missing
 safe_get <- function(entry, field, default = "") {
   val <- entry[[field]]
   if (is.null(val)) default else as.character(val)
@@ -97,21 +110,25 @@ items_xml <- vapply(entries, function(entry) {
   date    <- safe_get(entry, "prism:coverDate", "")
   doi     <- safe_get(entry, "prism:doi", "")
   journal <- xml_escape(safe_get(entry, "prism:publicationName", ""))
-  
-  # Build article link from DOI if available, otherwise use Scopus URL
-  if (nchar(doi) > 0) {
+  eid     <- safe_get(entry, "eid", "")
+
+  # Build article link: Scopus record link (for attribution), fallback to DOI
+  if (nchar(eid) > 0) {
+    link <- paste0("https://www.scopus.com/record/display.uri?eid=", eid, "&origin=resultslist")
+  } else if (nchar(doi) > 0) {
     link <- paste0("https://doi.org/", doi)
   } else {
     link <- safe_get(entry, "prism:url", "#")
   }
-  
+
   # Build a description with author, journal, and date
   desc_parts <- c()
   if (nchar(creator) > 0) desc_parts <- c(desc_parts, paste0("Author: ", creator, " et al."))
   if (nchar(journal) > 0) desc_parts <- c(desc_parts, paste0("Journal: ", journal))
   if (nchar(date) > 0)    desc_parts <- c(desc_parts, paste0("Published: ", date))
+  if (nchar(doi) > 0)     desc_parts <- c(desc_parts, paste0("DOI: ", doi))
   description <- xml_escape(paste(desc_parts, collapse = " | "))
-  
+
   # Format date as RFC 822 for RSS (pubDate)
   pub_date <- ""
   if (nchar(date) > 0) {
@@ -123,7 +140,7 @@ items_xml <- vapply(entries, function(entry) {
       pub_date <- format(parsed_date, "%a, %d %b %Y 00:00:00 +0000")
     }
   }
-  
+
   glue("    <item>
       <title>{title}</title>
       <link>{link}</link>
@@ -154,3 +171,4 @@ rss_xml <- glue('<?xml version="1.0" encoding="UTF-8"?>
 dir.create("docs", showWarnings = FALSE)
 writeLines(rss_xml, "docs/feed.xml")
 message(glue("RSS feed written to docs/feed.xml with {length(entries)} items."))
+message("Done!")
