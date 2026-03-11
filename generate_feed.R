@@ -14,7 +14,7 @@ library(jsonlite)
 
 # --- Configuration -----------------------------------------------------------
 
-# Scopus Author IDs for your group (used for querying AND filtering authors)
+# Scopus Author IDs (used for querying and filtering authors)
 author_map <- list(
   "57212495960" = "Spigner M.",
   "57031978800" = "Gussick M.",
@@ -159,7 +159,6 @@ items_xml <- vapply(unique_entries, function(entry) {
   eid     <- safe_get(entry, "eid", "")
   date    <- safe_get(entry, "prism:coverDate", "")
 
-  # Get ALL author names instead of just the group
   all_authors <- get_all_authors(entry)
 
   # Build link
@@ -171,13 +170,10 @@ items_xml <- vapply(unique_entries, function(entry) {
     link <- safe_get(entry, "prism:url", "#")
   }
 
-  # FORMATTING FIX: Use a standard <br /> and ensure no extra escaping
-  # We put the Journal and DOI inside CDATA to protect the HTML
   desc_body <- ""
   if (nchar(journal) > 0) desc_body <- paste0(journal, "<br />")
   if (nchar(doi) > 0)     desc_body <- paste0(desc_body, "DOI: ", doi)
 
-  # pubDate formatting
   pub_date <- ""
   if (nchar(date) > 0) {
     parsed_date <- tryCatch(as.Date(date), error = function(e) NA)
@@ -216,5 +212,6 @@ dir.create("docs", showWarnings = FALSE)
 writeLines(rss_xml, "docs/feed.xml")
 message(glue("RSS feed written to docs/feed.xml with {length(unique_entries)} items."))
 message("Done!")
+
 
 
