@@ -1,4 +1,5 @@
 Prehospital Division RSS Feed of Publications
+
 Michael Spigner (mspigner@medicine.wisc.edu)
 
 Problem: PubMed has built-in ability to generate an RSS feed from a search query. However, PubMed's ability to search by authors is limited because it's not possible to search author + institution pairs. Scopus, an Elsevier product, is another database with 92 million publications that has greater searchability. In Scopus, each author has their own unique ID that can be searched. Scopus does not have the ability to generate RSS feeds, so a workaround is needed to generate the feed from a search query.
